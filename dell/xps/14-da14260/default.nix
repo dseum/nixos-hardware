@@ -90,6 +90,50 @@ in
     SUBSYSTEM=="intel-ipu7-psys", MODE="0660", GROUP="video"
   '';
 
+  # Hide the raw IPU7 ISYS capture nodes from PipeWire. ISys exposes one
+  # /dev/videoN per CSI-2 stream (~30 of them here), all raw Bayer that no
+  # application can render — the frames only become an image after the PSys
+  # hardware ISP, which is what the relay above exposes. Left visible they fill
+  # every camera picker with unusable entries next to the one real device.
+  #
+  # Matched via device.product.name, which comes from udev's ID_V4L_PRODUCT and
+  # is set by the kernel at device registration -- unlike device.description,
+  # which WirePlumber derives from VIDIOC_QUERYCAP and so requires opening all
+  # ~30 nodes just to decide to hide them. Same approach as nixpkgs'
+  # hardware/video/webcam/ipu6.nix.
+  #
+  # Nothing here depends on IR; RGB-only users get the same benefit. mkDefault
+  # because this is a presentation choice rather than hardware enablement --
+  # set it to { } to get the raw nodes back.
+  services.pipewire.wireplumber.extraConfig."50-disable-v4l2-ipu7" = lib.mkDefault {
+    "monitor.v4l2.rules" = [
+      {
+        actions.update-props."device.disabled" = true;
+        matches = [
+          {
+            "device.product.name" = "ipu7";
+          }
+        ];
+      }
+    ];
+  };
+
+  # libcamera's software ISP selects the OV08X40's broken 1928x1088 binned
+  # mode. Hide only this built-in camera by its ACPI-backed libcamera path so
+  # other libcamera devices remain available.
+  services.pipewire.wireplumber.extraConfig."50-disable-libcamera-ipu7" = lib.mkDefault {
+    "monitor.libcamera.rules" = [
+      {
+        actions.update-props."device.disabled" = true;
+        matches = [
+          {
+            "api.libcamera.path" = "\\_SB_.LNK1";
+          }
+        ];
+      }
+    ];
+  };
+
   systemd.paths.ipu7-camera-relay = {
     description = "Start the IPU7 camera after audio initialization";
     wantedBy = [ "multi-user.target" ];

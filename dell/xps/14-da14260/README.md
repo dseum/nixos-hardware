@@ -334,6 +334,12 @@ The readiness check uses the persistent udev link
 can change when USB or display audio devices probe first. The relay unit repeats the same
 condition so a manual start cannot bypass the ordering constraint.
 
+WirePlumber can also discover the built-in sensor through libcamera's software ISP. That path
+selects the OV08X40's broken 1928 x 1088 binned mode and produces malformed frames. The profile
+disables only the libcamera device whose stable camera path is `\_SB_.LNK1`; the libcamera monitor
+remains available for external and future cameras. Applications use the colour-corrected IPU7
+hardware-ISP relay instead.
+
 ## IR camera (HM1092 / Windows Hello) — blocked at hardware level
 
 After months of reverse-engineering (intel/vision-drivers#37, last update 2026-05-29):
