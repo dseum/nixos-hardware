@@ -321,6 +321,19 @@ CVS topology. So the profile now:
 This patch is upstreamable to intel/ipu7-camera-hal (the ipu75xa configs will need it for any
 Panther Lake laptop on kernel ≥ 7.2).
 
+## Audio and camera probe ordering (2026-08-26)
+
+On this model, probing `intel_cvs` before the CS35L57 amplifiers prevents the amplifiers from
+reading their speaker ID and loading calibration. The SOF card then fails to register and desktop
+audio falls back to `Dummy Output`. The profile therefore blocks automatic `intel_cvs` loading
+and starts the camera relay only after the internal SOF SoundWire control device appears. The
+relay explicitly loads `intel_cvs` before opening the camera.
+
+The readiness check uses the persistent udev link
+`/dev/snd/by-path/pci-0000:00:1f.3-platform-sof_sdw`, not `/dev/snd/controlC0`; ALSA card numbers
+can change when USB or display audio devices probe first. The relay unit repeats the same
+condition so a manual start cannot bypass the ordering constraint.
+
 ## IR camera (HM1092 / Windows Hello) — blocked at hardware level
 
 After months of reverse-engineering (intel/vision-drivers#37, last update 2026-05-29):
