@@ -14,6 +14,8 @@ let
   ipu7-camera-bins = pkgs.callPackage ./ipu7-camera-bins { };
   ipu7-camera-hal = pkgs.callPackage ./ipu7-camera-hal { inherit ipu7-camera-bins; };
   icamerasrc = pkgs.callPackage ./icamerasrc { inherit ipu7-camera-hal; };
+  # ALSA card numbers change when other audio devices probe first.
+  sofSoundCard = "/dev/snd/by-path/pci-0000:00:1f.3-platform-sof_sdw";
 in
 {
   imports = [
@@ -50,13 +52,25 @@ in
     config.boot.kernelPackages.callPackage ./intel-cvs { }
   );
   boot.kernelModules = [
-    "intel_cvs"
     "v4l2loopback"
   ];
+  # The camera bridge and CS35L57 amplifiers share the speaker-ID GPIO. The
+  # amplifiers only sample it during probe, so load intel_cvs after ALSA has
+  # registered the sound card instead of letting coldplug claim it first.
+  boot.blacklistedKernelModules = [ "intel_cvs" ];
   # Don't let v4l2loopback auto-create a device at load time — an unconfigured
   # device has a degenerate framerate range that breaks GStreamer caps
   # negotiation. The relay service below creates a configured device at runtime.
-  boot.extraModprobeConfig = "options v4l2loopback devices=0";
+  #
+  # The softdep orders the USB-I2C bridge stack ahead of the imaging unit. The
+  # sensors are not on a native I2C controller: they sit behind the SVP7500,
+  # which tunnels I2C over a USB bulk interface, so the USB-I2C and INT3472
+  # plumbing must exist before intel_ipu7 starts bring-up. intel_cvs is omitted
+  # deliberately and loaded by the camera relay after audio initialization.
+  boot.extraModprobeConfig = ''
+    options v4l2loopback devices=0
+    softdep intel_ipu7 pre: usbio gpio_usbio i2c_usbio intel_skl_int3472_discrete
+  '';
 
   # IPU firmware + AIQ blobs for the hardware ISP. ivsc-firmware is kept for
   # parity with the tested `hardware.ipu7` config from nixpkgs #542085, though
@@ -75,6 +89,12 @@ in
     SUBSYSTEM=="usb", ATTRS{idVendor}=="06cb", ATTRS{idProduct}=="0701", ATTR{power/autosuspend}="-1"
     SUBSYSTEM=="intel-ipu7-psys", MODE="0660", GROUP="video"
   '';
+
+  systemd.paths.ipu7-camera-relay = {
+    description = "Start the IPU7 camera after audio initialization";
+    wantedBy = [ "multi-user.target" ];
+    pathConfig.PathExists = sofSoundCard;
+  };
 
   # The IPU7 camera is driven through the Intel camera HAL (hardware ISP with
   # per-sensor AIQ tuning — proper colours, low CPU), but applications only
@@ -136,7 +156,7 @@ in
       description = "Intel IPU7 camera to v4l2loopback relay (hardware ISP via camera HAL)";
       after = [ "modprobe@v4l2loopback.service" ];
       requires = [ "modprobe@v4l2loopback.service" ];
-      wantedBy = [ "multi-user.target" ];
+      unitConfig.ConditionPathExists = sofSoundCard;
       environment = {
         GST_PLUGIN_PATH = gstPluginPath;
         V4L2_DEVICE_FILE = deviceFile;
@@ -148,6 +168,7 @@ in
         RuntimeDirectory = "ipu7-camera-relay";
       };
       preStart = ''
+        ${pkgs.kmod}/bin/modprobe intel_cvs
         ${v4l2loopback-ctl} add -b 4 -x 1 -n "Intel IPU7 Camera" > ${deviceFile}
       '';
       script = ''
