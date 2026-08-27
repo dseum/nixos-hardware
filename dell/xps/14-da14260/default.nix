@@ -29,6 +29,15 @@ in
     lib.mkDefault pkgs.linuxPackages_latest
   );
 
+  # SoundWire can probe the amplifiers concurrently even though they share the
+  # speaker-ID GPIOs, making an exclusive GPIO request fail nondeterministically.
+  boot.kernelPatches = [
+    {
+      name = "cs35l56-serialize-speaker-id-gpio";
+      patch = ./cs35l56-serialize-speaker-id-gpio.patch;
+    }
+  ];
+
   # Intel CVS driver for Synaptics SVP7500 camera bridge (06CB:0701).
   # Without this the IPU7 camera stack does not enumerate even though the
   # kernel-side intel_ipu7 driver detects the sensor (OVTI08F4 / OV08F4).

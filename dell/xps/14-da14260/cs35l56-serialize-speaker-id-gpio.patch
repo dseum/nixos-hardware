@@ -1,0 +1,61 @@
+Subject: [PATCH] ASoC: cs35l56: Serialize speaker ID GPIO access
+
+Several amplifiers can reference the same motherboard speaker ID GPIOs and
+probe concurrently. The GPIO descriptors are requested exclusively, so one
+probe can fail with -EBUSY while another probe is reading the shared ID.
+
+Serialize the short GPIO acquisition, read, and release sequence.
+Property-based speaker IDs remain lockless, while unrelated probe work can
+still run in parallel.
+
+---
+ sound/soc/codecs/cs35l56-shared.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/sound/soc/codecs/cs35l56-shared.c b/sound/soc/codecs/cs35l56-shared.c
+--- a/sound/soc/codecs/cs35l56-shared.c
++++ b/sound/soc/codecs/cs35l56-shared.c
+@@ -14,2 +14,3 @@
+ #include <linux/gpio/consumer.h>
++#include <linux/mutex.h>
+ #include <linux/regmap.h>
+@@ -1538,3 +1539,9 @@
++/*
++ * Multiple amplifier devices can reference the same motherboard speaker-ID
++ * GPIOs and probe concurrently.
++ */
++static DEFINE_MUTEX(cs35l56_spk_id_lock);
++
+ int cs35l56_get_speaker_id(struct cs35l56_base *cs35l56_base)
+ {
+ 	struct gpio_descs *descs;
+@@ -1561,12 +1568,15 @@ int cs35l56_get_speaker_id(struct cs35l56_base *cs35l56_base)
+ 	}
+ 
+ 	/* Read the speaker type qualifier from the motherboard GPIOs */
++	mutex_lock(&cs35l56_spk_id_lock);
+ 	descs = gpiod_get_array_optional(cs35l56_base->dev, "spk-id", GPIOD_IN);
+ 	if (!descs) {
+-		return -ENOENT;
++		ret = -ENOENT;
++		goto out_unlock;
+ 	} else if (IS_ERR(descs)) {
+ 		ret = PTR_ERR(descs);
+-		return dev_err_probe(cs35l56_base->dev, ret, "Failed to get spk-id-gpios\n");
++		ret = dev_err_probe(cs35l56_base->dev, ret, "Failed to get spk-id-gpios\n");
++		goto out_unlock;
+ 	}
+ 
+ 	speaker_id = 0;
+@@ -1584,6 +1594,8 @@ int cs35l56_get_speaker_id(struct cs35l56_base *cs35l56_base)
+ 	ret = speaker_id;
+ err:
+ 	gpiod_put_array(descs);
+-
++out_unlock:
++	mutex_unlock(&cs35l56_spk_id_lock);
++
+ 	return ret;
+ }
+-- 
+2.51.0
