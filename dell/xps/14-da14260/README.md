@@ -323,11 +323,18 @@ Panther Lake laptop on kernel ≥ 7.2).
 
 ## Audio and camera probe ordering (2026-08-26)
 
-On this model, probing `intel_cvs` before the CS35L57 amplifiers prevents the amplifiers from
-reading their speaker ID and loading calibration. The SOF card then fails to register and desktop
-audio falls back to `Dummy Output`. The profile therefore blocks automatic `intel_cvs` loading
-and starts the camera relay only after the internal SOF SoundWire control device appears. The
-relay explicitly loads `intel_cvs` before opening the camera.
+The amplifiers and the camera bridge both use the motherboard speaker-ID GPIOs. Two independent
+contention cases can otherwise prevent the SOF card from registering and leave desktop audio with
+only `Dummy Output`:
+
+- SoundWire can probe the CS35L57 amplifiers concurrently through the kernel's CS35L56 driver.
+  The driver requests the shared GPIOs exclusively while reading the speaker ID, so one probe can
+  fail with `-EBUSY`. `cs35l56-serialize-speaker-id-gpio.patch` serializes only that short GPIO
+  operation.
+- Probing `intel_cvs` before the amplifiers can retain the same GPIOs and prevent the amplifiers
+  from reading their speaker ID and loading calibration. The profile therefore blocks automatic
+  `intel_cvs` loading and starts the camera relay only after the internal SOF SoundWire control
+  device appears. The relay explicitly loads `intel_cvs` before opening the camera.
 
 The readiness check uses the persistent udev link
 `/dev/snd/by-path/pci-0000:00:1f.3-platform-sof_sdw`, not `/dev/snd/controlC0`; ALSA card numbers
