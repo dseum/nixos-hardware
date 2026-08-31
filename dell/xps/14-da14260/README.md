@@ -124,8 +124,8 @@ So **the only missing piece for RGB is the `intel_cvs` kernel module**. libcamer
 
 ## Resolution — RGB camera working on DA14260 (2026-06-15)
 
-Packaged `intel_cvs` as a NixOS out-of-tree kernel module (`intel-cvs/default.nix`) with the
-`IRQF_ONESHOT` fix applied via `substituteInPlace`. After `nixos-rebuild switch` + reboot:
+The first working configuration packaged `intel_cvs` as an out-of-tree kernel module with the
+`IRQF_ONESHOT` fix applied. After `nixos-rebuild switch` + reboot:
 
 **Driver side — works.** dmesg shows the bridge initialising cleanly (no IRQ warning):
 
@@ -219,7 +219,7 @@ the IPU7's **hardware ISP (PSys)** with per-sensor AIQ tuning (real AWB/AE/colou
 This is the stack from [nixpkgs PR #542085](https://github.com/NixOS/nixpkgs/pull/542085)
 (`hardware.ipu7`), tested working on this exact laptop by @aoli-al (nixos-hardware PR #1912
 comments). Since that PR is not merged yet, the four pieces are **vendored** into this profile
-(same pattern as `intel-cvs/`) and should be dropped in favour of
+and should be dropped in favour of
 `hardware.ipu7 = { enable = true; platform = "ipu75xa"; }` once it lands:
 
 | Vendored package | Role |
@@ -248,25 +248,21 @@ offset. This preserves the compatible ABI while allowing the PSys probe to creat
 
 Profile changes on top of the vendoring:
 
-- `hardware.firmware` gains `ipu7-camera-bins` + `ivsc-firmware`
+- `hardware.firmware` gains `ipu7-camera-bins`
 - udev rule `SUBSYSTEM=="intel-ipu7-psys", MODE="0660", GROUP="video"` so the HAL can open PSys
 - relay input pipeline is now `icamerasrc ! videoconvert ! videoscale ! videoflip
   method=vertical-flip` — the `videobalance saturation=1.8` hack is gone (AIQ does real colour)
 - `GST_PLUGIN_PATH` swaps `libcamera` for the vendored `icamerasrc`
 
-**Unfree note:** `ipu7-camera-bins` and `ivsc-firmware` require allowing unfree, e.g.:
+**Unfree note:** `ipu7-camera-bins` requires allowing unfree, e.g.:
 
 ```nix
 nixpkgs.config.allowUnfreePredicate =
   pkg:
   builtins.elem (lib.getName pkg) [
     "ipu7-camera-bins"
-    "ivsc-firmware"
   ];
 ```
-
-(`ivsc-firmware` is kept for parity with the tested `hardware.ipu7` config; this machine's sensor
-sits behind a Synaptics SVP7500 rather than Intel IVSC, so it may prove droppable.)
 
 The stock `services.v4l2-relayd` instance that `hardware.ipu7` would create is not used here for
 the same buffer-count/queue reasons as before (gotcha 4) — the hand-rolled relay stays.
@@ -287,11 +283,9 @@ a V4L2 subdev to arbitrate CSI-2 link ownership. On 7.2 the sensor's fwnode grap
 module name and lives in depmod's higher-priority `updates/` directory, it shadowed the in-tree
 driver — the notifier waited forever and the sensor never bound.
 
-**Fix:** the profile now includes the vendored `intel-cvs/` module only when
-`config.boot.kernelPackages.kernel.version < 7.2`; on newer kernels the in-tree driver binds
-instead and completes the media graph. (The HAL copes with the extra hop: its
-`MediaControl::checkHasSource` walks intermediate entities recursively, the same mechanism used
-for IVSC setups.)
+**Fix:** the profile requires kernel 7.2 or newer and uses its in-tree driver, which completes the
+media graph. The HAL copes with the extra hop because `MediaControl::checkHasSource` walks
+intermediate entities recursively.
 
 ## Kernel ≥ 7.2, part 2: HAL must be CVS-aware (2026-08-22)
 
@@ -360,21 +354,21 @@ After months of reverse-engineering (intel/vision-drivers#37, last update 2026-0
 The `int3472-discrete INT3472:00: GPIO type 0x02 unknown` warning at boot relates to the IR LED
 GPIO for this sensor — irrelevant to the RGB camera.
 
-## Microphone — needs kernel ≥ 7.0
+## Kernel requirement
 
 The internal microphone does **not** work on older kernels (no capture device enumerated). It
-starts working on **kernel 7.0+**, so the profile sets `linuxPackages_latest` as a default when the
-configured kernel is older:
+starts working on kernel 7.0, while the camera topology needs the in-tree CVS driver added in
+kernel 7.2. The profile therefore selects `linuxPackages_latest` by default when the configured
+kernel is older than 7.2 and rejects an explicit older override:
 
 ```nix
-# We need at least 7.0 to have a working mic
-boot.kernelPackages = lib.mkIf (lib.versionOlder pkgs.linux.version "7.0") (
+# We need at least 7.2 for the in-tree CVS camera bridge.
+boot.kernelPackages = lib.mkIf (lib.versionOlder pkgs.linux.version "7.2") (
   lib.mkDefault pkgs.linuxPackages_latest
 );
 ```
 
-`lib.mkDefault` keeps this overridable — a user who already runs a ≥ 7.0 kernel (or wants to pin a
-different one) is unaffected.
+`lib.mkDefault` leaves a kernel at 7.2 or newer unaffected.
 
 ## Resolution/fps benchmark — 4K is free (2026-08-22)
 
@@ -402,7 +396,8 @@ upright/mirrored, low-latency, properly colour-corrected (AIQ tuning), usable by
 (cheese / Firefox / Chrome / conferencing). Requires allowing the unfree `ipu7-camera-bins`
 blobs (see above).
 
-Microphone **working** on kernel ≥ 7.0 (enforced as a `mkDefault` in the profile — see above).
+Microphone **working**; the profile requires kernel 7.2 or newer for the complete audio and camera
+configuration.
 
 ## Next Steps
 
