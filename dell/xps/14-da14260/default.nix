@@ -24,10 +24,17 @@ in
     ../../../common/pc/ssd
   ];
 
-  # We need at least 7.0 to have a working mic
-  boot.kernelPackages = lib.mkIf (lib.versionOlder pkgs.linux.version "7.0") (
+  # Linux 7.2 provides the in-tree CVS bridge required by this camera topology.
+  boot.kernelPackages = lib.mkIf (lib.versionOlder pkgs.linux.version "7.2") (
     lib.mkDefault pkgs.linuxPackages_latest
   );
+
+  assertions = [
+    {
+      assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "7.2";
+      message = "The Dell XPS 14 DA14260 profile requires Linux 7.2 or newer";
+    }
+  ];
 
   # SoundWire can probe the amplifiers concurrently even though they share the
   # speaker-ID GPIOs, making an exclusive GPIO request fail nondeterministically.
@@ -38,28 +45,14 @@ in
     }
   ];
 
-  # Intel CVS driver for Synaptics SVP7500 camera bridge (06CB:0701).
-  # Without this the IPU7 camera stack does not enumerate even though the
-  # kernel-side intel_ipu7 driver detects the sensor (OVTI08F4 / OV08F4).
-  # The patch removes a spurious IRQF_ONESHOT flag from a non-threaded IRQ
-  # handler that causes the bridge to wedge after brief idle periods.
-  # See: https://github.com/intel/vision-drivers/issues/37
-  #
-  # Kernel >= 7.2 ships an in-tree intel_cvs (drivers/media/i2c/cvs) that
-  # registers the V4L2 subdev which the 7.2 ipu-bridge now routes the sensor
-  # graph through (INTC10E1 is in its IVSC/CVS companion list). The
-  # out-of-tree module registers no subdev and would shadow the in-tree one
-  # (same module name, depmod updates/ priority), leaving the ISYS async
-  # notifier waiting forever — so only vendor it for older kernels.
+  # Intel CVS support for the Synaptics SVP7500 camera bridge is provided by
+  # the in-tree driver in Linux 7.2 and newer.
   boot.extraModulePackages = [
     # PSys module for the hardware ISP; the in-tree staging driver only has
     # the core + ISys (raw capture), which forces the untuned software ISP.
     (config.boot.kernelPackages.callPackage ./ipu7-drivers { })
     config.boot.kernelPackages.v4l2loopback
-  ]
-  ++ lib.optional (lib.versionOlder config.boot.kernelPackages.kernel.version "7.2") (
-    config.boot.kernelPackages.callPackage ./intel-cvs { }
-  );
+  ];
   boot.kernelModules = [
     "v4l2loopback"
   ];
@@ -81,14 +74,8 @@ in
     softdep intel_ipu7 pre: usbio gpio_usbio i2c_usbio intel_skl_int3472_discrete
   '';
 
-  # IPU firmware + AIQ blobs for the hardware ISP. ivsc-firmware is kept for
-  # parity with the tested `hardware.ipu7` config from nixpkgs #542085, though
-  # this machine bridges the sensor through a Synaptics SVP7500 (intel_cvs)
-  # rather than Intel IVSC — it may turn out to be droppable.
-  hardware.firmware = [
-    ipu7-camera-bins
-    pkgs.ivsc-firmware
-  ];
+  # IPU firmware + AIQ blobs for the hardware ISP.
+  hardware.firmware = [ ipu7-camera-bins ];
 
   # Prevent the SVP7500 USB bridge from autosuspending; the bridge firmware
   # has issues with power-state transitions that cause it to wedge on resume.
