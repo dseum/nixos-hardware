@@ -5,15 +5,65 @@
   ...
 }:
 let
-  # IPU7 hardware-ISP userspace stack (Intel camera HAL + proprietary AIQ
-  # tuning blobs + icamerasrc GStreamer element), vendored from nixpkgs PR
-  # #542085 until it merges. Once `hardware.ipu7` exists in nixpkgs, replace
-  # all of this (and the vendored packages) with:
-  #   hardware.ipu7 = { enable = true; platform = "ipu75xa"; };
-  # Note: ipu7-camera-bins is unfree — see README.md.
-  ipu7-camera-bins = pkgs.callPackage ./ipu7-camera-bins { };
-  ipu7-camera-hal = pkgs.callPackage ./ipu7-camera-hal { inherit ipu7-camera-bins; };
-  icamerasrc = pkgs.callPackage ./icamerasrc { inherit ipu7-camera-hal; };
+  # Reuse the upstream nixpkgs IPU7 packages and override only the revisions
+  # that are not yet compatible with this kernel and camera topology.
+  ipu7-camera-bins = pkgs.ipu7-camera-bins;
+
+  ipu7-camera-hal = pkgs.ipu75xa-camera-hal.overrideAttrs (_: {
+    # HAL master understands the in-tree intel_cvs V4L2 subdev added in Linux
+    # 7.2. The released HAL in nixpkgs predates that media-graph topology.
+    version = "0-unstable-2026-08-12";
+    src = pkgs.fetchFromGitHub {
+      owner = "intel";
+      repo = "ipu7-camera-hal";
+      rev = "11d8aff0d1ddc16aef56c8e6518e08e2f936a95b";
+      hash = "sha256-NSZVVOZKa3xhwitdKw4EZpukf5B/ObQC4GEDwHMmZ6s=";
+    };
+    patches = [ ./ipu7-camera-hal/ipu75xa-ov08x40-cvs.patch ];
+  });
+
+  icamerasrc = pkgs.gst_all_1.icamerasrc-ipu75xa.override {
+    ipu7x-camera-hal = ipu7-camera-hal;
+  };
+
+  ipu7-drivers = config.boot.kernelPackages.ipu7-drivers.overrideAttrs (_: {
+    # 24d8923 is the last revision before intel/ipu7-drivers#93 changed the
+    # kernel-owned bus layout. Backport only fixes that preserve that ABI.
+    version = "0-unstable-2026-06-19";
+    src = pkgs.fetchFromGitHub {
+      owner = "intel";
+      repo = "ipu7-drivers";
+      rev = "24d8923695dd977784845b637aba2cc21a927810";
+      hash = "sha256-uZ89nLkn6O0i1XqB9igAOm73HMRNEWVsWW5bcLvh7GE=";
+    };
+    patches = [
+      (pkgs.fetchpatch {
+        url = "https://github.com/intel/ipu7-drivers/commit/23cf17ab002dbb6b98da0e0dfa27ce2e4fe22a1f.patch";
+        hash = "sha256-zd9YhtIOCdftNBt5C+UZtDjRvE3Ca9iZJHSKBRSAvdA=";
+      })
+      (pkgs.fetchpatch {
+        url = "https://github.com/intel/ipu7-drivers/commit/4fbb9ebd2e9f5655469cc3651c8c8ea8492de749.patch";
+        hash = "sha256-b8tkpimkQ2d0Sq/osdYM3yptDI+clNu/CU4nCJTC0yA=";
+      })
+      (pkgs.fetchpatch {
+        url = "https://github.com/intel/ipu7-drivers/commit/858ab564118f5e802e1c83367e9f0353a947efd0.patch";
+        hash = "sha256-nTp3XPiIn9IFobQGbJPSk4JG2TI5CSJVSGHsRHzh4SE=";
+      })
+      (pkgs.fetchpatch {
+        url = "https://github.com/intel/ipu7-drivers/commit/9bc2e047041e68d9997b8c2f4484c8d9f5936ff0.patch";
+        hash = "sha256-SUaYoZieQkSGz5VNBRmRQAONcPXNmvlAZDuvk9U6Wfc=";
+      })
+      (pkgs.fetchpatch {
+        url = "https://github.com/intel/ipu7-drivers/commit/9bae9a68d44c4f35de206d00f88da27e60b1db14.patch";
+        hash = "sha256-e46UpCY/WCPSQ458c7O9V/KhAIUH/JKawFNO2ps4zcc=";
+      })
+      (pkgs.fetchpatch {
+        url = "https://github.com/intel/ipu7-drivers/commit/3f33fe8c0c7b701f8719d8f027eedcac10521f36.patch";
+        hash = "sha256-z8ozl1Cf2ROTcA1wFtoEWYE26uMhf7o2GzjsYT6ZkAo=";
+      })
+    ];
+  });
+
   # ALSA card numbers change when other audio devices probe first.
   sofSoundCard = "/dev/snd/by-path/pci-0000:00:1f.3-platform-sof_sdw";
 in
@@ -50,7 +100,7 @@ in
   boot.extraModulePackages = [
     # PSys module for the hardware ISP; the in-tree staging driver only has
     # the core + ISys (raw capture), which forces the untuned software ISP.
-    (config.boot.kernelPackages.callPackage ./ipu7-drivers { })
+    ipu7-drivers
     config.boot.kernelPackages.v4l2loopback
   ];
   boot.kernelModules = [

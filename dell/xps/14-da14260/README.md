@@ -216,18 +216,21 @@ The soft-ISP path above worked but was unstable (CPU-bound debayering) and produ
 to **`icamerasrc`** — Intel's GStreamer element on top of the **Intel camera HAL**, which drives
 the IPU7's **hardware ISP (PSys)** with per-sensor AIQ tuning (real AWB/AE/colour matrices).
 
-This is the stack from [nixpkgs PR #542085](https://github.com/NixOS/nixpkgs/pull/542085)
-(`hardware.ipu7`), tested working on this exact laptop by @aoli-al (nixos-hardware PR #1912
-comments). Since that PR is not merged yet, the four pieces are **vendored** into this profile
-and should be dropped in favour of
-`hardware.ipu7 = { enable = true; platform = "ipu75xa"; }` once it lands:
+The base stack was merged through
+[nixpkgs PR #542085](https://github.com/NixOS/nixpkgs/pull/542085). This profile now reuses the
+nixpkgs packages directly and overrides only two revisions that are not yet safe for this machine:
 
-| Vendored package | Role |
-|---|---|
-| `ipu7-drivers/` | `intel-ipu7-psys` kernel module — the hardware ISP device (`/dev/ipu7-psys0`); kernels ≥ 6.17 only ship the core + ISys in staging, no PSys |
-| `ipu7-camera-bins/` | IPU firmware + proprietary AIQ tuning blobs (**unfree**, Intel license) |
-| `ipu7-camera-hal/` | Intel camera HAL built for `ipu75xa` (Panther Lake) |
-| `icamerasrc/` | GStreamer source element wrapping the HAL |
+| Component | Source | DA14260-specific delta |
+|---|---|---|
+| `ipu7-camera-bins` | nixpkgs | None |
+| `icamerasrc-ipu75xa` | nixpkgs | Built against the corrected HAL below |
+| `ipu75xa-camera-hal` | nixpkgs derivation | HAL master plus the OV08X40 CVS media-graph patch |
+| `ipu7-drivers` | kernel-package derivation from nixpkgs | ABI-compatible PSys revision plus targeted backports |
+
+Using `hardware.ipu7` directly is not yet equivalent: it selects the incompatible PSys revision,
+the pre-CVS HAL release, `ivsc-firmware`, and the generic relay configuration. The local profile
+therefore retains only those machine-specific choices instead of carrying copies of the upstream
+package expressions.
 
 `ipu7-drivers` is pinned to `24d8923`, the last revision before the PSys ABI break reported in
 [intel/ipu7-drivers#93](https://github.com/intel/ipu7-drivers/issues/93). Newer revisions add
@@ -235,10 +238,11 @@ fields to `struct ipu7_bus_device`, but that structure is allocated by the kerne
 core with the older layout. Combining those revisions makes PSys write past the allocation and
 can corrupt unrelated kernel state.
 
-The three file-handle lifetime fixes from
+Three file-handle lifetime fixes from an earlier revision of
 [intel/ipu7-drivers#99](https://github.com/intel/ipu7-drivers/pull/99) are backported on top of that
 revision. They serialize PSys file release with in-flight ioctls and validate ioctl arguments
-without pulling in the incompatible shared-bus layout.
+without pulling in the incompatible shared-bus layout. The current PR revision changes that
+shared layout and cannot be used with the in-tree core.
 
 That compatible revision also predates three fixes needed with the in-tree IPU7 core. The profile
 backports the individual upstream commits that register the PSys bus before its auxiliary device,
@@ -246,13 +250,13 @@ give PSys its own debugfs directory, and keep the shared readiness flag at the i
 offset. This preserves the compatible ABI while allowing the PSys probe to create
 `/dev/ipu7-psys0`.
 
-Profile changes on top of the vendoring:
+Profile changes on top of the upstream packages:
 
 - `hardware.firmware` gains `ipu7-camera-bins`
 - udev rule `SUBSYSTEM=="intel-ipu7-psys", MODE="0660", GROUP="video"` so the HAL can open PSys
 - relay input pipeline is now `icamerasrc ! videoconvert ! videoscale ! videoflip
   method=vertical-flip` — the `videobalance saturation=1.8` hack is gone (AIQ does real colour)
-- `GST_PLUGIN_PATH` swaps `libcamera` for the vendored `icamerasrc`
+- `GST_PLUGIN_PATH` swaps `libcamera` for `icamerasrc-ipu75xa`
 
 **Unfree note:** `ipu7-camera-bins` requires allowing unfree, e.g.:
 
@@ -401,9 +405,9 @@ configuration.
 
 ## Next Steps
 
-1. Once [nixpkgs #542085](https://github.com/NixOS/nixpkgs/pull/542085) merges, drop the four
-   vendored ipu7 packages and switch to `hardware.ipu7 = { enable = true; platform = "ipu75xa"; }`
-   (keeping the hand-rolled relay, with `services.v4l2-relayd.instances.ipu7.enable = false;`).
+1. Switch to `hardware.ipu7` once its PSys revision is ABI-compatible with the in-tree core, its
+   Panther Lake HAL includes the CVS media graph, and the relay can express this machine's buffer,
+   latency, and orientation requirements.
 2. Upstream `ipu7-camera-hal/ipu75xa-ov08x40-cvs.patch` to intel/ipu7-camera-hal (any Panther
    Lake laptop on kernel ≥ 7.2 needs it).
 3. (Optional) Improve the `services.v4l2-relayd` NixOS module upstream so it can set loopback
